@@ -9,6 +9,8 @@ import { EuiComboBox, EuiFlexGroup, EuiFlexItem } from '@elastic/eui';
 import _ from 'lodash';
 import React, { Component } from 'react';
 
+import { i18n } from '@kbn/i18n';
+
 import type { Role } from '../../../../../../common/model';
 import { isRoleReadOnly } from '../../../../../../common/model';
 
@@ -47,6 +49,10 @@ export class ClusterPrivileges extends Component<Props, {}> {
           onChange={this.onClusterPrivilegesChange}
           onCreateOption={this.onCreateCustomPrivilege}
           isDisabled={isRoleReadOnly(role) || !editable}
+          placeholder={i18n.translate(
+            'xpack.security.management.editRole.clusterPrivileges.placeholder',
+            { defaultMessage: 'Add an action…' }
+          )}
         />
       </EuiFlexItem>
     );
