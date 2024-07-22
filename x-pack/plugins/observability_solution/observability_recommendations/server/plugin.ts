@@ -18,6 +18,7 @@ import type {
   ObservabilityRecommendationsPluginSetupDependencies,
   ObservabilityRecommendationsPluginStartDependencies,
 } from './types';
+import { createRecommendationsRoute } from './routes/recommendations';
 
 export class ObservabilityRecommendationsPlugin
   implements
@@ -42,12 +43,11 @@ export class ObservabilityRecommendationsPlugin
     >,
     plugins: ObservabilityRecommendationsPluginSetupDependencies
   ) {
-    return {};
+    const router = core.http.createRouter();
+    createRecommendationsRoute(router, core);
   }
 
-  public start(core: CoreStart) {
-    return {};
-  }
+  public start(core: CoreStart) {}
 
   public stop() {}
 }

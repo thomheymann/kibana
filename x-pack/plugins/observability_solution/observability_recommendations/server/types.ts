@@ -34,9 +34,7 @@ export interface ObservabilityRecommendationsPluginStartDependencies {
   security: SecurityPluginStart;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-empty-interface
-export interface ObservabilityRecommendationsPluginSetup {}
-// eslint-disable-next-line @typescript-eslint/no-empty-interface
-export interface ObservabilityRecommendationsPluginStart {}
+export type ObservabilityRecommendationsPluginSetup = void;
+export type ObservabilityRecommendationsPluginStart = void;
 
 export type ObservabilityRecommendationsRequestHandlerContext = CustomRequestHandlerContext<{}>;
