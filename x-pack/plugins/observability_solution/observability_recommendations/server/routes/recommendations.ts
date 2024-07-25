@@ -74,7 +74,8 @@ export function createRecommendationsRoute(
       const result = await getContainerImages(client.asCurrentUser);
       const recommendations: Recommendation[] = [];
       if (result.aggregations?.group_by_image_and_container_name?.buckets) {
-        for (const bucket of result.aggregations.group_by_image_and_container_name.buckets) {
+        for (const bucket of result.aggregations.group_by_image_and_container_name
+          .buckets as estypes.AggregationsStringTermsBucket[]) {
           const kubernetesContainerName = bucket.key;
           for (const serviceBucket of bucket.container_name.buckets) {
             const serviceName = serviceBucket.key;
@@ -201,5 +202,5 @@ async function hasExistingLogsOrMetrics(
       },
     },
   });
-  return Boolean(result.hits.total?.value);
+  return Boolean((result.hits.total as estypes.SearchTotalHits).value);
 }
