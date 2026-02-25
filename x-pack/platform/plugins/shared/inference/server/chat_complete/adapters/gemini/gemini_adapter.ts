@@ -53,6 +53,7 @@ export const geminiAdapter: InferenceConnectorAdapter = {
           model: modelName,
           signal: abortSignal,
           stopSequences: ['\n\nHuman:'],
+          ...(useThoughtSignature ? { thinkingConfig: { thinkingBudget: 2048 } } : {}),
           ...(metadata?.connectorTelemetry
             ? { telemetryMetadata: metadata.connectorTelemetry }
             : {}),
@@ -214,6 +215,9 @@ function messagesToGemini({
       return message;
     });
   }
+
+  // Gemini API requires at least one part per message; drop messages with empty parts
+  mapped = mapped.filter((message) => message.parts.length > 0);
 
   return mapped;
 }

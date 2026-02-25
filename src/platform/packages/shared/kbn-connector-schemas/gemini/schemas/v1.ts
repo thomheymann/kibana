@@ -69,6 +69,12 @@ export const RunActionResponseSchema = z.object({
 
 export const RunActionRawResponseSchema = z.any();
 
+export const ThinkingConfigSchema = z
+  .object({
+    thinkingBudget: z.number(),
+  })
+  .strict();
+
 export const InvokeAIActionParamsSchema = z
   .object({
     maxOutputTokens: z.coerce.number().optional(),
@@ -87,6 +93,7 @@ export const InvokeAIActionParamsSchema = z
       })
       .strict()
       .optional(),
+    thinkingConfig: ThinkingConfigSchema.optional(),
     telemetryMetadata: TelemetryMetadataSchema.optional(),
   })
   .strict();

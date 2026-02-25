@@ -313,6 +313,39 @@ describe('geminiAdapter', () => {
       });
     });
 
+    it('filters out messages with empty parts before sending to the API', () => {
+      geminiAdapter
+        .chatComplete({
+          logger,
+          executor: executorMock,
+          messages: [
+            {
+              role: MessageRole.User,
+              content: 'first',
+            },
+            {
+              role: MessageRole.Assistant,
+              content: '',
+              toolCalls: [],
+            },
+            {
+              role: MessageRole.User,
+              content: 'second',
+            },
+          ],
+        })
+        .subscribe(noop);
+
+      expect(executorMock.invoke).toHaveBeenCalledTimes(1);
+      const { messages } = getCallParams();
+      expect(messages.every((m: { parts: unknown[] }) => m.parts.length > 0)).toBe(true);
+      expect(messages).toHaveLength(2);
+      expect(messages[0].role).toBe('user');
+      expect(messages[0].parts).toHaveLength(1);
+      expect(messages[1].role).toBe('user');
+      expect(messages[1].parts).toHaveLength(1);
+    });
+
     it('correctly formats content parts', () => {
       geminiAdapter
         .chatComplete({

@@ -62,6 +62,7 @@ interface Payload {
   generation_config: {
     temperature: number;
     maxOutputTokens?: number;
+    thinkingConfig?: { thinkingBudget: number };
   };
   tool_config?: {
     function_calling_config: {
@@ -333,6 +334,7 @@ export class GeminiConnector extends SubActionConnector<Config, Secrets> {
       timeout,
       tools,
       toolConfig,
+      thinkingConfig,
       systemInstruction,
     }: InvokeAIRawActionParams,
     connectorUsageCollector: ConnectorUsageCollector
@@ -346,6 +348,7 @@ export class GeminiConnector extends SubActionConnector<Config, Secrets> {
             temperature,
             systemInstruction,
             toolConfig,
+            thinkingConfig,
           }),
           tools,
         }),
@@ -380,6 +383,7 @@ export class GeminiConnector extends SubActionConnector<Config, Secrets> {
       timeout,
       tools,
       toolConfig,
+      thinkingConfig,
     }: InvokeAIActionParams,
     connectorUsageCollector: ConnectorUsageCollector
   ): Promise<IncomingMessage> {
@@ -391,6 +395,7 @@ export class GeminiConnector extends SubActionConnector<Config, Secrets> {
             messages,
             temperature,
             toolConfig,
+            thinkingConfig,
             systemInstruction,
           }),
           tools,
@@ -412,11 +417,13 @@ const formatGeminiPayload = ({
   systemInstruction,
   temperature,
   toolConfig,
+  thinkingConfig,
 }: {
   maxOutputTokens?: number;
   messages: Array<{ role: string; content: string; parts: MessagePart[] }>;
   systemInstruction?: string;
   toolConfig?: InvokeAIActionParams['toolConfig'];
+  thinkingConfig?: InvokeAIActionParams['thinkingConfig'];
   temperature: number;
 }): Payload => {
   const payload: Payload = {
@@ -424,6 +431,7 @@ const formatGeminiPayload = ({
     generation_config: {
       temperature,
       maxOutputTokens,
+      ...(thinkingConfig ? { thinkingConfig } : {}),
     },
     ...(systemInstruction ? { system_instruction: { parts: [{ text: systemInstruction }] } } : {}),
     ...(toolConfig
