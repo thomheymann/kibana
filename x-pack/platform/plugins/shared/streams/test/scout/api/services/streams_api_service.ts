@@ -136,17 +136,36 @@ export function getStreamsTestApiService({
       status: RoutingStatus = 'enabled'
     ) {
       await measurePerformanceAsync(log, 'streamsTestApi.forkStream', async () => {
-        await kbnClient.request({
-          method: 'POST',
-          path: `/api/streams/${parentStream}/_fork`,
-          body: {
-            where: condition,
-            status,
-            stream: {
-              name: childStream,
+        try {
+          await kbnClient.request({
+            method: 'POST',
+            path: `/api/streams/${parentStream}/_fork`,
+            body: {
+              where: condition,
+              status,
+              stream: {
+                name: childStream,
+              },
             },
-          },
-        });
+          });
+        } catch (error: unknown) {
+          const responseData =
+            error && typeof error === 'object' && 'response' in error
+              ? (error as { response?: { data?: unknown } }).response?.data
+              : undefined;
+          if (responseData !== undefined) {
+            log.error(
+              `forkStream failed (parent=${parentStream}, child=${childStream}): ${JSON.stringify(
+                responseData
+              )}`
+            );
+          } else if (error instanceof Error) {
+            log.error(
+              `forkStream failed (parent=${parentStream}, child=${childStream}): ${error.message}`
+            );
+          }
+          throw error;
+        }
       });
     },
 

@@ -29,6 +29,7 @@ export async function suggestProcessingPipeline({
   definition,
   inferenceClient,
   parsingProcessor,
+  maxDurationMs,
   maxSteps,
   signal,
   simulatePipeline,
@@ -39,6 +40,7 @@ export async function suggestProcessingPipeline({
   definition: Streams.ingest.all.Definition;
   inferenceClient: BoundInferenceClient;
   parsingProcessor?: GrokProcessor | DissectProcessor;
+  maxDurationMs?: number | undefined;
   maxSteps?: number | undefined;
   signal: AbortSignal;
   simulatePipeline(pipeline: StreamlangDSL): Promise<ProcessingSimulationResponse>;
@@ -91,6 +93,7 @@ export async function suggestProcessingPipeline({
     inferenceClient,
     prompt: SuggestIngestPipelinePrompt,
     input,
+    maxDurationMs,
     maxSteps: effectiveMaxSteps,
     toolCallbacks: {
       simulate_pipeline: async (toolCall) => {

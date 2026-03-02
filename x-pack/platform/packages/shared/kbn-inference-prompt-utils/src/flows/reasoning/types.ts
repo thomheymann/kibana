@@ -20,6 +20,7 @@ export type ReasoningPower = 'low' | 'medium' | 'high';
 
 export interface ReasoningPromptOptions {
   inferenceClient: BoundInferenceClient;
+  maxDurationMs?: number;
   maxSteps?: number;
   prevMessages?: undefined;
   power?: ReasoningPower;
