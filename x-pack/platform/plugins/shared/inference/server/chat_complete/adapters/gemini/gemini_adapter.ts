@@ -53,7 +53,6 @@ export const geminiAdapter: InferenceConnectorAdapter = {
           model: modelName,
           signal: abortSignal,
           stopSequences: ['\n\nHuman:'],
-          ...(useThoughtSignature ? { thinkingConfig: { thinkingBudget: 2048 } } : {}),
           ...(metadata?.connectorTelemetry
             ? { telemetryMetadata: metadata.connectorTelemetry }
             : {}),
