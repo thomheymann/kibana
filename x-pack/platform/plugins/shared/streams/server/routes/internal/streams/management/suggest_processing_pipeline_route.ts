@@ -128,9 +128,9 @@ export const suggestProcessingPipelineRoute = createServerRoute({
     logger,
     telemetry,
   }): Promise<SuggestProcessingPipelineResponse> => {
-    logger.debug('[suggest_pipeline] Request received');
+    logger.debug(`[${params.path.name}][suggest_pipeline] Request received`);
     logger.debug(
-      `[suggest_pipeline] extracted_patterns: grok=${Boolean(
+      `[${params.path.name}][suggest_pipeline] extracted_patterns: grok=${Boolean(
         params.body.extracted_patterns?.grok
       )} dissect=${Boolean(params.body.extracted_patterns?.dissect)}`
     );
@@ -171,7 +171,7 @@ export const suggestProcessingPipelineRoute = createServerRoute({
 
           if (grok) {
             logger.debug(
-              `[suggest_pipeline] (parallel) scheduling grok patternGroups=${grok.patternGroups.length} fieldName=${grok.fieldName}`
+              `[${stream.name}][suggest_pipeline] (parallel) scheduling grok patternGroups=${grok.patternGroups.length} fieldName=${grok.fieldName}`
             );
             candidatePromises.push(
               processGrokPatterns({
@@ -188,7 +188,9 @@ export const suggestProcessingPipelineRoute = createServerRoute({
                 logger,
               }).catch((error) => {
                 if (isNoLLMSuggestionsError(error)) {
-                  logger.debug('[suggest_pipeline] No LLM suggestions available for grok');
+                  logger.debug(
+                    `[${stream.name}][suggest_pipeline] No LLM suggestions available for grok`
+                  );
                   return null;
                 }
                 throw error;
@@ -197,7 +199,7 @@ export const suggestProcessingPipelineRoute = createServerRoute({
           }
           if (dissect) {
             logger.debug(
-              `[suggest_pipeline] (parallel) scheduling dissect messages=${dissect.messages.length} fieldName=${dissect.fieldName}`
+              `[${stream.name}][suggest_pipeline] (parallel) scheduling dissect messages=${dissect.messages.length} fieldName=${dissect.fieldName}`
             );
             candidatePromises.push(
               processDissectPattern({
@@ -214,7 +216,9 @@ export const suggestProcessingPipelineRoute = createServerRoute({
                 logger,
               }).catch((error) => {
                 if (isNoLLMSuggestionsError(error)) {
-                  logger.debug('[suggest_pipeline] No LLM suggestions available for dissect');
+                  logger.debug(
+                    `[${stream.name}][suggest_pipeline] No LLM suggestions available for dissect`
+                  );
                   return null;
                 }
                 throw error;
@@ -233,34 +237,36 @@ export const suggestProcessingPipelineRoute = createServerRoute({
             } => r !== null
           );
           candidates.forEach((c) =>
-            logger.debug(`[suggest_pipeline] Candidate type=${c.type} parsedRate=${c.parsedRate}`)
+            logger.debug(
+              `[${stream.name}][suggest_pipeline] Candidate type=${c.type} parsedRate=${c.parsedRate}`
+            )
           );
           if (candidates.length > 0) {
             candidates.sort((a, b) => b.parsedRate - a.parsedRate);
             logger.debug(
-              `[suggest_pipeline] Selected processor type=${candidates[0].type} parsedRate=${candidates[0].parsedRate}`
+              `[${stream.name}][suggest_pipeline] Selected processor type=${candidates[0].type} parsedRate=${candidates[0].parsedRate}`
             );
             parsingProcessor = candidates[0].processor;
           }
         }
 
-        const maxSteps = 6; // Limit reasoning steps for latency and token cost
         const startTime = Date.now();
 
         const result = await suggestProcessingPipeline({
           definition: stream,
           inferenceClient: inferenceClient.bindTo({ connectorId: params.body.connector_id }),
           parsingProcessor,
-          maxSteps,
+          maxDurationMs: 120_000, // 2 minutes wall-time budget
+          maxSteps: 6, // Limit reasoning steps for latency and token cost
           signal: abortController.signal,
           documents: params.body.documents,
           esClient: scopedClusterClient.asCurrentUser,
           fieldsMetadataClient,
-          simulatePipeline: (pipeline: StreamlangDSL) =>
+          simulatePipeline: (pipeline: StreamlangDSL, documents?: FlattenRecord[]) =>
             simulateProcessing({
               params: {
                 path: { name: stream.name },
-                body: { processing: pipeline, documents: params.body.documents },
+                body: { processing: pipeline, documents: documents ?? params.body.documents },
               },
               scopedClusterClient,
               streamsClient,
@@ -269,6 +275,12 @@ export const suggestProcessingPipelineRoute = createServerRoute({
         });
 
         const durationMs = Date.now() - startTime;
+
+        logger.debug(
+          `[${stream.name}][suggest_pipeline] Pipeline suggestion complete success=${
+            result.pipeline !== null
+          } stepsUsed=${result.metadata.stepsUsed} duration=${durationMs}ms`
+        );
 
         // Report telemetry for pipeline suggestion
         telemetry.trackProcessingPipelineSuggested({
@@ -344,12 +356,9 @@ async function processGrokPatterns({
   // Request grok pattern reviews for each group in parallel
   const grokResults = await Promise.allSettled(
     patternGroups.map(async (group) => {
-      logger.debug(`[suggest_pipeline][grok] Reviewing group messages=${group.messages.length}`);
-      // Call LLM to review patterns directly
-      const patterns = group.nodes
-        .filter((node): node is { pattern: string } => 'pattern' in node)
-        .map((node) => node.pattern);
-      logger.debug(`[suggest_pipeline][grok] Derived patterns=${patterns.length}`);
+      logger.debug(
+        `[${streamName}][suggest_pipeline][grok] Reviewing group messages=${group.messages.length} nodes=${group.nodes.length}`
+      );
 
       const grokProcessor = await handleProcessingGrokSuggestions({
         params: {
@@ -368,14 +377,11 @@ async function processGrokPatterns({
         signal,
         logger,
       });
-      logger.debug('[suggest_pipeline][grok] LLM review response received');
+      logger.debug(`[${streamName}][suggest_pipeline][grok] LLM review response received`);
 
-      const grokProcessorResult = getGrokProcessor(
-        patterns.map((pattern) => ({ pattern })),
-        grokProcessor
-      );
+      const grokProcessorResult = getGrokProcessor(group.nodes, grokProcessor);
       logger.debug(
-        `[suggest_pipeline][grok] getGrokProcessor produced patterns=${grokProcessorResult.patterns.length}`
+        `[${streamName}][suggest_pipeline][grok] getGrokProcessor produced patterns=${grokProcessorResult.patterns.length}`
       );
 
       return grokProcessorResult;
@@ -387,7 +393,7 @@ async function processGrokPatterns({
     if (result.status === 'fulfilled') {
       acc.push(result.value);
     } else {
-      logger.error('[suggest_pipeline][grok] LLM review failed:', result.reason);
+      logger.error(`[${streamName}][suggest_pipeline][grok] LLM review failed:`, result.reason);
       // Don't re-throw - allow partial success
     }
     return acc;
@@ -408,7 +414,7 @@ async function processGrokPatterns({
   // If all patterns were empty, return null
   if (filteredPatterns.length === 0) {
     logger.debug(
-      '[suggest_pipeline][grok] All patterns were empty after filtering out empty string patterns'
+      `[${streamName}][suggest_pipeline][grok] All patterns were empty after filtering out empty string patterns`
     );
     return null;
   }
@@ -426,6 +432,7 @@ async function processGrokPatterns({
               customIdentifier: SUGGESTED_GROK_PROCESSOR_ID,
               from: fieldName,
               patterns: filteredPatterns,
+              pattern_definitions: combinedGrokProcessor.pattern_definitions,
             },
           ],
         },
@@ -445,6 +452,7 @@ async function processGrokPatterns({
       action: 'grok',
       from: fieldName,
       patterns: filteredPatterns as [string, ...string[]],
+      pattern_definitions: combinedGrokProcessor.pattern_definitions,
     },
     parsedRate,
   };
@@ -489,21 +497,21 @@ async function processDissectPattern({
   }
 
   // Extract dissect pattern on server-side
-  logger.debug('[suggest_pipeline][dissect] Grouping messages by pattern');
+  logger.debug(`[${streamName}][suggest_pipeline][dissect] Grouping messages by pattern`);
   const grouped = groupMessagesByDissectPattern(messages);
   if (grouped.length === 0) {
-    logger.debug('[suggest_pipeline][dissect] No patterns found in messages');
+    logger.debug(`[${streamName}][suggest_pipeline][dissect] No patterns found in messages`);
     return null;
   }
 
   const largestGroup = grouped[0];
   logger.debug(
-    `[suggest_pipeline][dissect] Extracting pattern from largest group messages=${largestGroup.messages.length}`
+    `[${streamName}][suggest_pipeline][dissect] Extracting pattern from largest group messages=${largestGroup.messages.length}`
   );
   const dissectPattern = extractDissectPattern(largestGroup.messages);
 
   if (!dissectPattern.ast.nodes.length) {
-    logger.debug('[suggest_pipeline][dissect] No AST nodes in extracted pattern');
+    logger.debug(`[${streamName}][suggest_pipeline][dissect] No AST nodes in extracted pattern`);
     return null;
   }
 
@@ -530,7 +538,9 @@ async function processDissectPattern({
   const pattern = dissectProcessor.pattern;
 
   if (!pattern || pattern.trim().length === 0) {
-    logger.debug('[suggest_pipeline][dissect] Empty pattern generated; skipping simulation');
+    logger.debug(
+      `[${streamName}][suggest_pipeline][dissect] Empty pattern generated; skipping simulation`
+    );
     return null;
   }
 

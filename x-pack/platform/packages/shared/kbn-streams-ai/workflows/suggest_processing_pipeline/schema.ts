@@ -22,8 +22,6 @@ import {
   rangeConditionSchema,
   stringOrNumberOrBoolean,
   processorBaseWithWhereSchema,
-  grokProcessorSchema,
-  dissectProcessorSchema,
   dateProcessorSchema,
   removeProcessorSchema,
   renameProcessorSchema,
@@ -37,9 +35,9 @@ export const pipelineDefinitionSchema = z
         // Explicitly set list of processors we want to include in suggestions
         // Currently focused on extract and parse date use cases
         // Future: add set, replace, drop, append processors
+        // Note: grok and dissect processors are intentionally excluded here since
+        // they are created heuristically, not by the LLM
         z.union([
-          grokProcessorSchema,
-          dissectProcessorSchema,
           dateProcessorSchema,
           removeProcessorSchema,
           renameProcessorSchema,

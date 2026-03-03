@@ -19,6 +19,7 @@ export const SuggestIngestPipelinePrompt = createPrompt({
     pipeline_schema: z.string(),
     fields_schema: z.string(),
     parsing_processor: z.string().optional(),
+    parsing_processor_coverage: z.string().optional(),
     initial_dataset_analysis: z.string(),
   }),
 })
@@ -36,7 +37,7 @@ export const SuggestIngestPipelinePrompt = createPrompt({
     tools: {
       simulate_pipeline: {
         description:
-          'Test your pipeline against sample data. Use this iteratively: simulate → read errors → fix → simulate again. Returns validation errors and simulation metrics. Keep calling until errors are resolved.',
+          'Test your pipeline against already-parsed sample documents. Returns per-processor metrics (failure rates, errors) and overall validation. Use iteratively: simulate → check which processor failed → fix → simulate again.',
         schema: {
           type: 'object',
           properties: {

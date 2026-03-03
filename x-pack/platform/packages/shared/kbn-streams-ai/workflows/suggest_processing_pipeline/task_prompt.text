@@ -1,44 +1,45 @@
-Analyze this data stream and determine if an ingest pipeline is needed. Use an **iterative eval/dev loop**: analyze, decide, design (if needed), simulate, fix errors, repeat.
+Analyze this data stream and build a post-processing pipeline. Use an **iterative eval/dev loop**: inspect fields, design, simulate, fix errors, repeat.
 
 ## Your Workflow
 
 1. **Analyze** the dataset analysis below to understand the data structure
-2. **Decide** if processing is actually needed:
-   - If data already has proper `@timestamp`, `severity_text`, `body.text`, etc. → **commit an empty pipeline** `{ "steps": [] }`
-   - If there's no `event.original` or raw text to parse → **commit an empty pipeline**
-   - If `body.text` is a simple message (not a structured log line) → **do NOT parse it**
-   - Only design processors if the data actually needs transformation
-   - **Never create no-op grok/dissect patterns** that extract a field's entire content unchanged (e.g., `%{body.text}` from `body.text`)
-   - Note: `date` processors to reformat timestamps or `convert` processors to change types ARE valid transformations
-3. **Design** a pipeline with appropriate processors (only if processing is needed)
+2. **Inspect** each field in the dataset analysis for issues:
+   - `(unmapped)` fields likely need type conversions via `convert` processors
+   - Temporary fields from parsing (e.g., `attributes.custom.*`) should be removed after use
+   - Verify field *values* match schema semantics — not just that the field exists
+   - Non-ISO date strings need `date` processors; numeric strings need `convert`
+3. **Design** a pipeline addressing the issues found
 4. **Call `simulate_pipeline`** to test it against sample data
-5. **Read the errors** carefully and fix the issues
+5. **Read the errors** carefully — check the `processors` section for per-processor failure rates to identify exactly which processor is broken
 6. **Repeat** steps 4-5 until simulation passes
-7. **Call `commit_pipeline`** when done - this can be `{ "steps": [] }` if no processing is needed
+7. **Call `commit_pipeline`** when done
 
-**Not all data needs processing.** If the data is already well-structured with schema-compliant fields, commit an empty pipeline. Don't add unnecessary processors.
+**Expect multiple iterations.** The first attempt rarely works perfectly. Read error messages — they include processor IDs so you know exactly which processor to fix.
 
-**Expect multiple iterations.** The first attempt rarely works perfectly. Read error messages - they tell you exactly what to fix.
-
-**Less is more.** When fixing errors, simplify rather than add complexity. Remove problematic processors instead of adding workarounds. Prioritize reliable parsing of common cases over handling rare edge cases.
+**Less is more.** When fixing errors, simplify rather than add complexity. Remove problematic processors instead of adding workarounds.
 
 ## Tools
 
-- **`simulate_pipeline(pipeline)`** - Runs your COMPLETE pipeline against the ORIGINAL raw documents. Returns errors and metrics. The dataset analysis below shows parsed output - but simulation starts from raw data, so include the parsing processor in your pipeline.
+- **`simulate_pipeline(pipeline)`** - Runs your pipeline against the sample documents shown in the dataset analysis. Returns per-processor metrics, errors, and overall validation. The response includes a `processors` section showing which specific processors failed.
 - **`commit_pipeline(message)`** - Finalize when simulation passes.
 
 ## Key Rules
 
+**Do NOT include grok or dissect processors.** Parsing has already been handled. Your pipeline should only contain post-processing steps: date normalization, type conversions, field renames, and cleanup.
+
 {{#parsing_processor}}
-**Pre-generated parsing processor provided** - Use as a starting point:
+**Parsing context:** A parsing processor was applied before your pipeline:
 ```
 {{{parsing_processor}}}
 ```
-**Important:** When a parsing processor is provided, the system has already determined that this data needs parsing. You MUST NOT commit an empty pipeline — use this processor (or a modified version) as the first step, then add date normalization, type conversions, and cleanup. The dataset analysis below shows documents AFTER this processor runs; `simulate_pipeline` runs against ORIGINAL raw documents, so include the parsing step to get the extracted fields.
+{{#parsing_processor_coverage}}
+{{{parsing_processor_coverage}}}
+{{/parsing_processor_coverage}}
+The dataset analysis below shows documents AFTER this parser ran. Your `simulate_pipeline` also runs against these already-parsed documents. Do NOT re-parse — the parsing processor extracted raw string values. Check these extracted fields for: type conversions needed, temporary fields to remove, and date strings to normalize.
 {{/parsing_processor}}
 
 {{^parsing_processor}}
-**No parsing processor provided** - Build the full pipeline from scratch.
+**No parsing processor was applied.** The documents below are in their original form.
 {{/parsing_processor}}
 
 **Target Schema:** {{{fields_schema}}}
@@ -48,7 +49,6 @@ Analyze this data stream and determine if an ingest pipeline is needed. Use an *
 **Required:**
 - Valid `@timestamp` on ≥99% of documents
 - Correct field types per schema
-- `on_failure` handlers for error resilience
 
 ---
 
@@ -60,8 +60,10 @@ Analyze this data stream and determine if an ingest pipeline is needed. Use an *
 
 ## Dataset Analysis
 
+Fields annotated `(unmapped)` have no explicit index mapping and typically need `convert` processors.
+
 {{{initial_dataset_analysis}}}
 
 ---
 
-Now analyze the data and start your eval/dev loop. Call `simulate_pipeline` with your first attempt, then iterate based on the results.
+Now inspect each field for issues. If you find any, design a pipeline and call `simulate_pipeline`. Only commit an empty pipeline if every field is already correctly typed and schema-compliant.

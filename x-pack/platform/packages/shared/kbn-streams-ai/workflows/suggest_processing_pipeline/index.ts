@@ -14,6 +14,7 @@ import type { IFieldsMetadataClient } from '@kbn/fields-metadata-plugin/server/s
 import { isOtelStream } from '@kbn/streams-schema';
 import type { ElasticsearchClient } from '@kbn/core/server';
 import { i18n } from '@kbn/i18n';
+import type { ZodError } from '@kbn/zod';
 import { SuggestIngestPipelinePrompt } from './prompt';
 import { getPipelineDefinitionJsonSchema, pipelineDefinitionSchema } from './schema';
 
@@ -29,6 +30,7 @@ export async function suggestProcessingPipeline({
   definition,
   inferenceClient,
   parsingProcessor,
+  timeout,
   maxDurationMs,
   maxSteps,
   signal,
@@ -40,10 +42,14 @@ export async function suggestProcessingPipeline({
   definition: Streams.ingest.all.Definition;
   inferenceClient: BoundInferenceClient;
   parsingProcessor?: GrokProcessor | DissectProcessor;
+  timeout?: number | undefined;
   maxDurationMs?: number | undefined;
   maxSteps?: number | undefined;
   signal: AbortSignal;
-  simulatePipeline(pipeline: StreamlangDSL): Promise<ProcessingSimulationResponse>;
+  simulatePipeline(
+    pipeline: StreamlangDSL,
+    documents?: FlattenRecord[]
+  ): Promise<ProcessingSimulationResponse>;
   documents: FlattenRecord[];
   fieldsMetadataClient: IFieldsMetadataClient;
   esClient: ElasticsearchClient;
@@ -67,15 +73,49 @@ export async function suggestProcessingPipeline({
   // Parallelize independent async operations
   const [mappedFields, simulationResult] = await Promise.all([
     getMappedFields(esClient, definition.name),
-    simulatePipeline({
-      steps: parsingProcessor ? [parsingProcessor] : [],
-    }),
+    simulatePipeline(
+      addCustomIdentifiersToSteps({
+        steps: parsingProcessor ? [parsingProcessor] : [],
+      })
+    ),
   ]);
-  const simulationMetrics = await getSimulationMetrics(
-    simulationResult,
+  // When a parsing processor is provided, filter to only successfully parsed documents
+  // so the LLM builds post-processing against clean, already-parsed data.
+  let postParseDocuments: FlattenRecord[];
+  let parsingCoverage: { parsed: number; total: number } | undefined;
+
+  // Fields created by the parsing processor that have no index mapping — the LLM's
+  // pipeline should either convert or remove these.
+  let temporaryParsingFields: string[] = [];
+
+  if (parsingProcessor) {
+    const parsedDocs = simulationResult.documents.filter((doc) => doc.status === 'parsed');
+    parsingCoverage = { parsed: parsedDocs.length, total: simulationResult.documents.length };
+    postParseDocuments = parsedDocs.length > 0 ? parsedDocs.map((doc) => doc.value) : documents;
+
+    temporaryParsingFields = simulationResult.detected_fields
+      .filter(
+        (f) =>
+          !mappedFields[f.name] &&
+          (f.name.startsWith('custom.') || f.name.startsWith('attributes.custom.'))
+      )
+      .map((f) => f.name);
+  } else {
+    postParseDocuments = documents;
+  }
+
+  // Compute metrics from the filtered post-parse documents by re-simulating
+  // with an empty pipeline against the post-parse state
+  const postParseSimulationResult = parsingProcessor
+    ? await simulatePipeline(addCustomIdentifiersToSteps({ steps: [] }), postParseDocuments)
+    : simulationResult;
+
+  const initialFeedback = await buildSimulationFeedback(
+    postParseSimulationResult,
     fieldsMetadataClient,
     isOtel,
-    mappedFields
+    mappedFields,
+    temporaryParsingFields
   );
 
   const input = {
@@ -84,8 +124,11 @@ export async function suggestProcessingPipeline({
       ? `OpenTelemetry (OTel) semantic convention for log records`
       : 'Elastic Common Schema (ECS)',
     pipeline_schema: JSON.stringify(getPipelineDefinitionJsonSchema(pipelineDefinitionSchema)),
-    initial_dataset_analysis: JSON.stringify(simulationMetrics),
+    initial_dataset_analysis: JSON.stringify(initialFeedback),
     parsing_processor: parsingProcessor ? JSON.stringify(parsingProcessor) : undefined,
+    parsing_processor_coverage: parsingCoverage
+      ? `The parsing processor matched ${parsingCoverage.parsed} of ${parsingCoverage.total} documents. Only the matched documents are included below.`
+      : undefined,
   };
 
   // Invoke the reasoning agent to suggest the ingest pipeline
@@ -93,6 +136,7 @@ export async function suggestProcessingPipeline({
     inferenceClient,
     prompt: SuggestIngestPipelinePrompt,
     input,
+    timeout,
     maxDurationMs,
     maxSteps: effectiveMaxSteps,
     toolCallbacks: {
@@ -103,7 +147,7 @@ export async function suggestProcessingPipeline({
           return {
             response: {
               valid: false,
-              errors: pipeline.error.issues,
+              errors: formatZodPipelineErrors(pipeline.error, toolCall.function.arguments.pipeline),
               metrics: undefined,
             },
           };
@@ -112,54 +156,17 @@ export async function suggestProcessingPipeline({
         // 2. Add customIdentifiers to steps for proper tracking in simulation results
         const pipelineWithIdentifiers = addCustomIdentifiersToSteps(pipeline.data as StreamlangDSL);
 
-        // 3. Simulate the pipeline and collect metrics
-        const simulateResult = await simulatePipeline(pipelineWithIdentifiers);
-        const metrics = await getSimulationMetrics(
+        // 3. Simulate the pipeline against post-parse documents
+        const simulateResult = await simulatePipeline(pipelineWithIdentifiers, postParseDocuments);
+        const feedback = await buildSimulationFeedback(
           simulateResult,
           fieldsMetadataClient,
           isOtel,
-          mappedFields
+          mappedFields,
+          temporaryParsingFields
         );
 
-        // Collect unique errors from simulation
-        const uniqueErrors = getUniqueDocumentErrors(simulateResult);
-
-        // 3. Validate parse rate - if below 80%, mark as invalid
-        const parseRate = metrics.parse_rate;
-        if (parseRate < 80) {
-          return {
-            response: {
-              valid: false,
-              errors: [
-                `Parse rate is too low: ${parseRate.toFixed(
-                  2
-                )}% (minimum required: 80%). The pipeline is not extracting fields from enough documents. Review the processors and ensure they handle the document structure correctly.`,
-                ...uniqueErrors,
-              ],
-              metrics,
-            },
-          };
-        }
-
-        // 4. Validate processor failure rates - each processor should have < 20% failure rate
-        const processorFailures = validateProcessorFailureRates(simulateResult);
-        if (processorFailures.length > 0) {
-          return {
-            response: {
-              valid: false,
-              errors: [...processorFailures, ...uniqueErrors],
-              metrics,
-            },
-          };
-        }
-
-        return {
-          response: {
-            valid: true,
-            errors: uniqueErrors.length > 0 ? uniqueErrors : undefined,
-            metrics,
-          },
-        };
+        return { response: feedback };
       },
       commit_pipeline: async (toolCall) => {
         const pipeline = pipelineDefinitionSchema.safeParse(toolCall.function.arguments.pipeline);
@@ -217,8 +224,12 @@ export async function suggestProcessingPipeline({
     };
   }
 
-  // Add customIdentifier to each step for proper tracking in simulations
-  const pipelineWithIdentifiers = addCustomIdentifiersToSteps(commitPipeline.data as StreamlangDSL);
+  // Stitch the parsing processor back as the first step if it was handled separately
+  const fullPipeline: StreamlangDSL = {
+    steps: [...(parsingProcessor ? [parsingProcessor] : []), ...commitPipeline.data.steps],
+  };
+
+  const pipelineWithIdentifiers = addCustomIdentifiersToSteps(fullPipeline);
 
   return {
     pipeline: pipelineWithIdentifiers,
@@ -238,6 +249,83 @@ function addCustomIdentifiersToSteps(pipeline: StreamlangDSL): StreamlangDSL {
       customIdentifier: step.customIdentifier || `${index}`,
     })),
   };
+}
+
+/**
+ * Formats Zod validation errors for pipeline definitions by narrowing union
+ * errors to the intended processor type based on the `action` field.
+ * This avoids showing errors for all 6 union members when only 1 is relevant.
+ */
+function formatZodPipelineErrors(zodError: ZodError, rawPipeline: unknown): string[] {
+  const steps = (rawPipeline as { steps?: unknown[] })?.steps;
+
+  return zodError.issues.flatMap((issue) => {
+    // For union errors on a step, try to match the intended processor type
+    if (issue.code === 'invalid_union' && issue.path.length >= 2 && issue.path[0] === 'steps') {
+      const stepIndex = issue.path[1] as number;
+      const step = steps?.[stepIndex] as { action?: string } | undefined;
+      const intendedAction = step?.action;
+
+      if (intendedAction && 'unionErrors' in issue) {
+        // Find the union member that matches the intended action
+        const matchingUnionError = (issue.unionErrors as ZodError[]).find((ue) =>
+          ue.issues.every(
+            (ui) =>
+              !('received' in ui && 'expected' in ui && ui.path.includes('action')) ||
+              ui.expected === intendedAction
+          )
+        );
+
+        if (matchingUnionError) {
+          // Filter out the "wrong action" errors — only show property-level issues
+          const propertyErrors = matchingUnionError.issues.filter(
+            (ui) => !ui.path.includes('action')
+          );
+
+          if (propertyErrors.length > 0) {
+            return propertyErrors.map(
+              (ui) =>
+                `Step ${stepIndex} (${intendedAction}): ${ui.path.slice(2).join('.')} — ${
+                  ui.message
+                }`
+            );
+          }
+        }
+      }
+    }
+
+    return [`${issue.path.join('.')}: ${issue.message}`];
+  });
+}
+
+/**
+ * Checks whether any temporary fields created by the parsing processor still exist
+ * in the simulated output. These fields should have been removed or converted by
+ * the LLM's pipeline.
+ */
+function findRemainingTemporaryFields(
+  simulationResult: ProcessingSimulationResponse,
+  temporaryFields: string[]
+): string[] {
+  if (temporaryFields.length === 0) {
+    return [];
+  }
+
+  const fieldsStillPresent = new Set<string>();
+  for (const doc of simulationResult.documents) {
+    if (doc.value) {
+      for (const field of temporaryFields) {
+        if (field in doc.value) {
+          fieldsStillPresent.add(field);
+        }
+      }
+    }
+  }
+
+  return Array.from(fieldsStillPresent).map(
+    (field) =>
+      `Temporary field "${field}" was created by the parsing processor and is still present. Add a "remove" processor to clean it up, or use its value first (e.g., parse it with a "date" processor) then remove it.`
+  );
 }
 
 /**
@@ -264,6 +352,34 @@ function validateProcessorFailureRates(simulationResult: ProcessingSimulationRes
   return errors;
 }
 
+/**
+ * Builds a per-processor summary for the LLM, including failure rates
+ * and top error messages so the LLM can identify which processor is broken.
+ */
+function getProcessorMetricsSummary(
+  simulationResult: ProcessingSimulationResponse
+): Record<string, { failed_rate: string; errors: string[] }> {
+  const summary: Record<string, { failed_rate: string; errors: string[] }> = {};
+
+  if (!simulationResult.processors_metrics) {
+    return summary;
+  }
+
+  for (const [processorId, metrics] of Object.entries(simulationResult.processors_metrics)) {
+    const topErrors = metrics.errors
+      .slice(0, 3)
+      .map((err) => err.message)
+      .filter(Boolean);
+
+    summary[processorId] = {
+      failed_rate: `${(metrics.failed_rate * 100).toFixed(1)}%`,
+      errors: topErrors,
+    };
+  }
+
+  return summary;
+}
+
 export function getUniqueDocumentErrors(simulationResult: ProcessingSimulationResponse): string[] {
   if (!simulationResult.documents || simulationResult.documents.length === 0) {
     return [];
@@ -275,7 +391,10 @@ export function getUniqueDocumentErrors(simulationResult: ProcessingSimulationRe
   for (const doc of simulationResult.documents) {
     if (doc.errors && doc.errors.length > 0) {
       for (const error of doc.errors) {
-        const key = `${error.type}: ${error.message}`;
+        const processorId = 'processor_id' in error ? error.processor_id : undefined;
+        const key = processorId
+          ? `[${processorId}] ${error.message}`
+          : `${error.type}: ${error.message}`;
         if (!errorMap.has(key)) {
           errorMap.set(key, {
             count: 1,
@@ -346,6 +465,41 @@ async function getMappedFields(esClient: ElasticsearchClient, index: string) {
       sorted[key] = mappedFields[key];
       return sorted;
     }, {});
+}
+
+async function buildSimulationFeedback(
+  simulateResult: ProcessingSimulationResponse,
+  fieldsMetadataClient: IFieldsMetadataClient,
+  isOtel: boolean,
+  mappedFields: Record<string, string>,
+  temporaryFields: string[]
+): Promise<{
+  valid: boolean;
+  errors?: string[];
+  metrics: { sampled: number; fields: string[]; parse_rate: number };
+  processors?: Record<string, { failed_rate: string; errors: string[] }>;
+}> {
+  const metrics = await getSimulationMetrics(
+    simulateResult,
+    fieldsMetadataClient,
+    isOtel,
+    mappedFields
+  );
+  const uniqueErrors = getUniqueDocumentErrors(simulateResult);
+  const processorsSummary = getProcessorMetricsSummary(simulateResult);
+  const remainingTempFields = findRemainingTemporaryFields(simulateResult, temporaryFields);
+  const processorFailures = validateProcessorFailureRates(simulateResult);
+
+  const hardErrors = [...processorFailures, ...remainingTempFields];
+  const allErrors = [...hardErrors, ...uniqueErrors];
+  const hasProcessors = Object.keys(processorsSummary).length > 0;
+
+  return {
+    valid: hardErrors.length === 0,
+    errors: allErrors.length > 0 ? allErrors : undefined,
+    metrics,
+    processors: hasProcessors ? processorsSummary : undefined,
+  };
 }
 
 async function getSimulationMetrics(

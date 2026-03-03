@@ -103,12 +103,7 @@ export function getDissectProcessorWithReview(
     }
   });
 
-  const dissectConfig: {
-    field: string;
-    pattern: string;
-    ignore_missing: boolean;
-    append_separator?: string;
-  } = {
+  const dissectConfig: DissectProcessorResult['processor']['dissect'] = {
     field: sourceField,
     pattern: finalPattern,
     ignore_missing: true,

@@ -113,7 +113,7 @@ describe('getUniqueDocumentErrors', () => {
 
     const result = getUniqueDocumentErrors(simulationResult);
     expect(result).toEqual([
-      'generic_processor_failure: Failed to parse field (occurred in 2 documents)',
+      '[proc1] Failed to parse field (occurred in 2 documents)',
       'field_mapping_failure: Invalid format',
     ]);
   });
@@ -199,11 +199,11 @@ describe('getUniqueDocumentErrors', () => {
 
     const result = getUniqueDocumentErrors(simulationResult);
     expect(result.length).toBe(6); // 5 errors + 1 "more errors" message
-    expect(result[0]).toBe('generic_processor_failure: Error 1');
-    expect(result[1]).toBe('generic_processor_failure: Error 2');
-    expect(result[2]).toBe('generic_processor_failure: Error 3');
-    expect(result[3]).toBe('generic_processor_failure: Error 4');
-    expect(result[4]).toBe('generic_processor_failure: Error 5');
+    expect(result[0]).toBe('[proc1] Error 1');
+    expect(result[1]).toBe('[proc2] Error 2');
+    expect(result[2]).toBe('[proc3] Error 3');
+    expect(result[3]).toBe('[proc4] Error 4');
+    expect(result[4]).toBe('[proc5] Error 5');
     expect(result[5]).toBe('... and 2 more error(s)');
   });
 
@@ -236,7 +236,7 @@ describe('getUniqueDocumentErrors', () => {
     const result = getUniqueDocumentErrors(simulationResult);
     expect(result.length).toBe(1);
     expect(result[0].length).toBe(253); // 250 chars + '...'
-    expect(result[0].startsWith('generic_processor_failure: ')).toBe(true);
+    expect(result[0].startsWith('[proc1] ')).toBe(true);
     expect(result[0].endsWith('...')).toBe(true);
   });
 
@@ -277,7 +277,7 @@ describe('getUniqueDocumentErrors', () => {
 
     const result = getUniqueDocumentErrors(simulationResult);
     expect(result.length).toBe(1);
-    // The full error would be: "generic_processor_failure: " + 230 'a's + " (occurred in 2 documents)"
+    // The full error would be: "[proc1] " + 230 'a's + " (occurred in 2 documents)"
     // which is > 250 chars, so it should be truncated
     expect(result[0].length).toBe(253); // 250 chars + '...'
     expect(result[0].endsWith('...')).toBe(true);
@@ -321,8 +321,8 @@ describe('getUniqueDocumentErrors', () => {
 
     const result = getUniqueDocumentErrors(simulationResult);
     expect(result.length).toBe(3);
-    expect(result).toContain('generic_processor_failure: First error (occurred in 2 documents)');
-    expect(result).toContain('generic_processor_failure: Second error');
+    expect(result).toContain('[proc1] First error (occurred in 2 documents)');
+    expect(result).toContain('[proc2] Second error');
     expect(result).toContain('field_mapping_failure: Third error');
   });
 
@@ -389,7 +389,7 @@ describe('getUniqueDocumentErrors', () => {
 
     const result = getUniqueDocumentErrors(simulationResult);
     expect(result.length).toBe(5);
-    expect(result[4]).toBe('generic_processor_failure: Error 5');
+    expect(result[4]).toBe('[proc5] Error 5');
     // No "more errors" message should be present
   });
 });
