@@ -313,7 +313,7 @@ describe('geminiAdapter', () => {
       });
     });
 
-    it('filters out messages with empty parts before sending to the API', () => {
+    it('filters out messages with empty parts and re-merges consecutive same-role messages', () => {
       geminiAdapter
         .chatComplete({
           logger,
@@ -338,12 +338,11 @@ describe('geminiAdapter', () => {
 
       expect(executorMock.invoke).toHaveBeenCalledTimes(1);
       const { messages } = getCallParams();
-      expect(messages.every((m: { parts: unknown[] }) => m.parts.length > 0)).toBe(true);
-      expect(messages).toHaveLength(2);
-      expect(messages[0].role).toBe('user');
-      expect(messages[0].parts).toHaveLength(1);
-      expect(messages[1].role).toBe('user');
-      expect(messages[1].parts).toHaveLength(1);
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toEqual({
+        role: 'user',
+        parts: [{ text: 'first' }, { text: 'second' }],
+      });
     });
 
     it('correctly formats content parts', () => {

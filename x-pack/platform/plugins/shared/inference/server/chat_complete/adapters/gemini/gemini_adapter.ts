@@ -189,15 +189,8 @@ function toolSchemaToGemini({ schema }: { schema: ToolSchema }): Gemini.Function
 
 const skipThoughtSignatureHash = 'skip_thought_signature_validator';
 
-function messagesToGemini({
-  messages,
-  useThoughtSignature,
-}: {
-  messages: Message[];
-  useThoughtSignature: boolean;
-}): GeminiMessage[] {
-  let mapped = messages.map(messageToGeminiMapper()).reduce<GeminiMessage[]>((output, message) => {
-    // merging consecutive messages from the same user, as Gemini requires multi-turn messages
+function mergeConsecutiveSameRole(messages: GeminiMessage[]): GeminiMessage[] {
+  return messages.reduce<GeminiMessage[]>((output, message) => {
     const previousMessage = output.length ? output[output.length - 1] : undefined;
     if (previousMessage?.role === message.role) {
       previousMessage.parts.push(...message.parts);
@@ -206,18 +199,27 @@ function messagesToGemini({
     }
     return output;
   }, []);
+}
+
+function messagesToGemini({
+  messages,
+  useThoughtSignature,
+}: {
+  messages: Message[];
+  useThoughtSignature: boolean;
+}): GeminiMessage[] {
+  // Filter empty-part messages first, then merge so roles always alternate.
+  const mapped = mergeConsecutiveSameRole(
+    messages.map(messageToGeminiMapper()).filter((message) => message.parts.length > 0)
+  );
 
   if (useThoughtSignature) {
-    mapped = mapped.map((message, index, array) => {
-      if (index < array.length - 1) {
+    mapped.forEach((message, index) => {
+      if (index < mapped.length - 1) {
         addThoughtSignatureToFirstFunctionCall(message);
       }
-      return message;
     });
   }
-
-  // Gemini API requires at least one part per message; drop messages with empty parts
-  mapped = mapped.filter((message) => message.parts.length > 0);
 
   return mapped;
 }
